@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import type { Plugin, ViteDevServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
 
@@ -98,12 +98,42 @@ function serialize(value: unknown) {
   return JSON.stringify(value, null, 2)
 }
 
+function reportVariableName(id: string) {
+  return `reportWeek${id.replace(/[^a-zA-Z0-9]/g, '')}`
+}
+
+function assertSafeReportId(id: string) {
+  if (!/^\d{4}-W\d{2}$/.test(id)) {
+    throw new Error(`Invalid report id: ${id}`)
+  }
+}
+
+function createReportWeekSource(week: WeeklyReportWeek) {
+  const variableName = reportVariableName(week.id)
+
+  return `import type { WeeklyReportWeek } from '../weeklyReports'
+
+export const ${variableName}: WeeklyReportWeek = ${serialize(week)}
+`
+}
+
 function createWeeklyReportsSource(weeks: WeeklyReportWeek[]) {
   const normalizedWeeks = normalizeWeeks(weeks)
   const firstWeek = normalizedWeeks[0]
-  const firstReports = firstWeek?.reports ?? []
+  const firstWeekVariable = firstWeek ? reportVariableName(firstWeek.id) : null
+  const imports = normalizedWeeks
+    .map(
+      (week) =>
+        `import { ${reportVariableName(week.id)} } from './reports/${week.id}'`,
+    )
+    .join('\n')
+  const weekList = normalizedWeeks
+    .map((week) => `  ${reportVariableName(week.id)},`)
+    .join('\n')
 
-  return `export interface WeeklyReport {
+  return `${imports}
+
+export interface WeeklyReport {
   id: number
   weekLabel: string
   dateRange: string
@@ -130,17 +160,21 @@ export interface WeeklyReportWeek {
   reports: WeeklyReport[]
 }
 
+export const defaultWeeklyReportWeeks: WeeklyReportWeek[] = [
+${weekList}
+]
+
 export const defaultMeta = {
   weekLabel: ${JSON.stringify(firstWeek?.weekLabel ?? '第 23 周')},
   dateRange: ${JSON.stringify(firstWeek?.dateRange ?? '2026.06.01 - 2026.06.05')},
   shortDateRange: ${JSON.stringify(firstWeek?.shortDateRange ?? '06.01 - 06.05')},
 } as const
 
-export const defaultWeeklyReports: WeeklyReport[] = ${serialize(firstReports)}
+export const defaultWeeklyReports: WeeklyReport[] = ${
+    firstWeekVariable ? `${firstWeekVariable}.reports` : '[]'
+  }
 
-export const defaultWeeklyReportWeeks: WeeklyReportWeek[] = ${serialize(normalizedWeeks)}
-
-/** @deprecated 使用 defaultWeeklyReports */
+/** @deprecated 使用 defaultWeeklyReportWeeks */
 export const weeklyReports = defaultWeeklyReports
 `
 }
@@ -180,8 +214,22 @@ function weeklyReportsWriterPlugin(): Plugin {
             return
           }
 
+          const normalizedWeeks = normalizeWeeks(parsed.weeks)
+          const reportsDir = resolve(server.config.root, 'src/data/reports')
+          await mkdir(reportsDir, { recursive: true })
+          await Promise.all(
+            normalizedWeeks.map((week) => {
+              assertSafeReportId(week.id)
+              return writeFile(
+                resolve(reportsDir, `${week.id}.ts`),
+                createReportWeekSource(week),
+                'utf8',
+              )
+            }),
+          )
+
           const target = resolve(server.config.root, 'src/data/weeklyReports.ts')
-          await writeFile(target, createWeeklyReportsSource(parsed.weeks), 'utf8')
+          await writeFile(target, createWeeklyReportsSource(normalizedWeeks), 'utf8')
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify({ ok: true }))
         } catch {

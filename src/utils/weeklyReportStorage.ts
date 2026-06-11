@@ -66,13 +66,16 @@ function normalizeWeek(raw: WeeklyReportWeek): WeeklyReportWeek {
 function mergeWeeks(
   sourceWeeks: WeeklyReportWeek[],
   localWeeks: WeeklyReportWeek[],
+  preferLocal: boolean,
 ): WeeklyReportWeek[] {
   const merged = new Map<string, WeeklyReportWeek>()
   sourceWeeks.forEach((week) => {
     merged.set(week.id, normalizeWeek(week))
   })
   localWeeks.forEach((week) => {
-    merged.set(week.id, normalizeWeek(week))
+    if (preferLocal || !merged.has(week.id)) {
+      merged.set(week.id, normalizeWeek(week))
+    }
   })
 
   return [...merged.values()].sort((a, b) => {
@@ -114,20 +117,11 @@ export function loadReportWeeks(
         parsed.length > 0 &&
         parsed.every(isWeeklyReportWeek)
       ) {
-        return mergeWeeks(fallback, parsed)
+        return mergeWeeks(fallback, parsed, !import.meta.env.DEV)
       }
     }
 
-    const legacyReports = loadReports(fallback[0]?.reports ?? [])
-    const firstFallback = fallback[0]
-    if (!firstFallback) return fallback
-
-    return [
-      {
-        ...firstFallback,
-        reports: legacyReports,
-      },
-    ]
+    return fallback
   } catch {
     return fallback
   }
