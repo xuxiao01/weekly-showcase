@@ -28,11 +28,56 @@ function partLabelForIndex(index: number): string {
 }
 
 type SectionKey = 'completed' | 'nextPlans'
+type ReportListItem = WeeklyReport['completed'][number]
 
 interface PageDraft {
   title: string
+  partLabel: string
+  weekLabel?: string
+  dateRange?: string
+  shortDateRange?: string
   completed: WeeklyReport['completed']
   nextPlans: WeeklyReport['nextPlans']
+}
+
+function parseHeading(rawTitle: string, index: number) {
+  const [partLabel, ...titleParts] = rawTitle.split(/[｜|]/)
+  const title = titleParts.join('｜').trim()
+
+  if (title && partLabel?.trim()) {
+    return {
+      partLabel: partLabel.trim(),
+      title,
+    }
+  }
+
+  return {
+    partLabel: partLabelForIndex(index),
+    title: rawTitle.trim(),
+  }
+}
+
+function parseDateLine(line: string) {
+  const match = line.match(
+    /^\s*(?:(\d{4})\s*年)?\s*(第\s*\d+\s*周)\s*[·.・]\s*(.+?)\s*$/,
+  )
+  if (!match) return null
+
+  const year = match[1]
+  const weekLabel = match[2]!.replace(/\s+/g, ' ')
+  const shortDateRange = match[3]!.trim()
+  const dateRange = year
+    ? shortDateRange.replace(
+        /(\d{2})\.(\d{2})\s*-\s*(\d{2})\.(\d{2})/,
+        `${year}.$1.$2 - ${year}.$3.$4`,
+      )
+    : shortDateRange
+
+  return {
+    weekLabel,
+    dateRange,
+    shortDateRange,
+  }
 }
 
 export function parseWeeklyMd(
@@ -47,38 +92,62 @@ export function parseWeeklyMd(
   const pages: PageDraft[] = []
   let currentPage: PageDraft | null = null
   let currentSection: SectionKey | null = null
+  let currentItem: ReportListItem | null = null
 
   for (const rawLine of trimmed.split(/\r?\n/)) {
     const line = rawLine.trimEnd()
 
     const h1Match = line.match(/^#\s+(.+)$/)
     if (h1Match && !line.startsWith('##')) {
+      const heading = parseHeading(h1Match[1]!.trim(), pages.length)
       currentPage = {
-        title: h1Match[1]!.trim(),
+        title: heading.title,
+        partLabel: heading.partLabel,
         completed: [],
         nextPlans: [],
       }
       pages.push(currentPage)
       currentSection = null
+      currentItem = null
       continue
     }
 
     if (/^##\s*本周完成\s*$/.test(line)) {
       currentSection = 'completed'
+      currentItem = null
       continue
     }
 
     if (/^##\s*(未来展望|下周计划)\s*$/.test(line)) {
       currentSection = 'nextPlans'
+      currentItem = null
       continue
     }
 
-    const bulletMatch = line.match(/^\s*[-*]\s+(.+)$/)
+    const dateMeta = parseDateLine(line)
+    if (dateMeta && currentPage) {
+      currentPage.weekLabel = dateMeta.weekLabel
+      currentPage.dateRange = dateMeta.dateRange
+      currentPage.shortDateRange = dateMeta.shortDateRange
+      continue
+    }
+
+    const images = [...line.matchAll(/!\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)]
+      .map((match) => match[1]?.trim())
+      .filter((src): src is string => Boolean(src))
+    if (images.length > 0 && currentItem) {
+      currentItem.images = [...(currentItem.images ?? []), ...images]
+      continue
+    }
+
+    const bulletMatch = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/)
     if (bulletMatch && currentPage && currentSection) {
-      currentPage[currentSection].push({
+      const item = {
         title: bulletMatch[1]!.trim(),
         description: '',
-      })
+      }
+      currentPage[currentSection].push(item)
+      currentItem = item
     }
   }
 
@@ -91,10 +160,10 @@ export function parseWeeklyMd(
 
   const data: WeeklyReport[] = pages.map((page, index) => ({
     id: index + 1,
-    weekLabel: meta.weekLabel,
-    dateRange: meta.dateRange,
-    shortDateRange: meta.shortDateRange,
-    partLabel: partLabelForIndex(index),
+    weekLabel: page.weekLabel ?? meta.weekLabel,
+    dateRange: page.dateRange ?? meta.dateRange,
+    shortDateRange: page.shortDateRange ?? meta.shortDateRange,
+    partLabel: page.partLabel,
     title: page.title,
     completed: page.completed,
     nextPlans: page.nextPlans,
